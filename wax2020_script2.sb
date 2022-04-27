@@ -1,0 +1,97 @@
+#!/bin/bash --login
+########## Define Resources Needed with SBATCH Lines ##########
+
+#SBATCH --time=24:00:00               # limit of wall clock time - how long the job will run (same as -t)
+#SBATCH --ntasks=4
+#SBATCH --nodes=1-4
+#SBATCH --cpus-per-task=10             # number of CPUs (or cores) per task (same as -c)
+#SBATCH --mem=400G                    # memory required per node - amount of memory (in bytes)
+#SBATCH --job-name wax_read_preprocess_colovasj_cmse        # you can give your job a name for easier identification (same as -J)
+#SBATCH --mail-user=colovasj@msu.edu
+#SBATCH --mail-type=BEGIN,END
+#SBATCH --output=read_preprocess.log
+
+##When using the script, do not need to remove remove ‘#’ at the beginning of each line to allow lines to be read by the compiler
+###these lines tell the HPCC to email you when the job begins and when it ends
+#### set up and modify paths as needed
+#### cd “choose directory” navigates to the right location on the HPCC
+#### mkdir “make directory” creates a new directory in the folder you’re currently in, this one will be called Wax2020
+
+	cd /mnt/research/ShadeLab/WorkingSpace/Colovas/Wax2020
+
+##### First, prepare the tab-delimited manifest file (OUTSIDE OF THIS FILE) to import the sequence data.
+#### manifest file is a tab-delimited file with 3 columns. The headers should be as followed:
+#### sample-id forward-absolute-filepath reverse-absolute-filepath
+#### Additionally, use FIGARO (OUTSIDE OF THIS FILE) to determine the settings for later in the pipeline.
+
+####activate the conda environment that you have installed, for us, this is the one I have installed using miniconda
+
+	conda activate qiime2-2021.8
+
+#### Import files, specify the file type, what and where the file is currently, what the output will be, and then where it will be output.
+####Manifest file will be demultiplexed by qiime if needed
+#### make sure that these are actually the input filetypes that we have
+
+	qiime tools import --type 'SampleData[PairedEndSequencesWithQuality]' --input-path Wax2020/manifest_file.tsv --output-path-	Wax2020/paired-end-demux.qza -input-format PairedEndFastqManifestPhred33V2
+
+#### All sequence data imported into QIIIME2 is stored compressed in the paired-end-demux.qza file “demux” = “demultiplex
+#### You can create a visualization file from this file format and upload into view.qiime2.org
+#### The visualization graphs the number of sequences (x) vs the number of samples (y) in both the fwd and reverse directions, the number of sequences per sample
+
+	qiime demux summarize --i-data Wax2020/paired-end-demux.qza --o-visualization Wax2020/demux.qzv
+
+#### Next step is to run the DADA2 plug-in to denoise samples
+### Filter and trim reads
+### Find the most likely set of unique sequence variants in the sample (ASVs)
+### Remove chimeras
+### Count the abundance of each ASVs
+#### https://benjjneb.github.io/dada2/
+#### use Zymo Research’s program FIGARO to find the trim parameters to optimize merging Forward and Reverse reads. Remove as much of the lower quality portions of the reads as possible and still leaves enough overlap.
+(NOT PART OF PIPELINE, DONE OUTSIDE TERMINAL BEFORE RUNNING SCRIPT, and update with figaro parameters)
+#### https://john-quensen.com/tutorials/figaro/
+#### https://github.com/Zymo-Research/figaro
+
+	qiime dada2 denoise-paired --i-demultiplexed-seqs Wax2020/paired-end-demux.qza --p-trunc-len-f 121 --p-trunc-len-r 161  --o-table 	Wax2020/DADA2/table.qza  --o-representative-sequences Wax2020/DADA2/rep-seqs.qza  --o-denoising-stats 	Wax2020/DADA2/denoising-stats.qza
+
+#### You can create a visualization file of the denoising
+#### visualization file is a table of each sample, the number of input sequences, the number of filtered sequences, the percentage of input ####sequences that passed the filter, the number of denoised reads, the number of merged reads, the percentage of input sequences that were ####merged, the number of non-chimeric reads, and the percentage of non-chimeric reads
+
+	qiime metadata tabulate  --m-input-file Wax2020/DADA2/denoising-stats.qza  --o-visualization Wax2020/DADA2/denoising-	stats.qzv
+
+####This creates a visualization file of the features in the sample, aka the ASVs/OTUs (OTU TABLE)
+
+	qiime feature-table summarize --i-table Wax2020/DADA2/table.qza  --o-visualization Wax2020/DADA2/table.qzv --m-sample-	metadata-file metadata.txt
+
+####This next visualization is a table of the summary of sequence lengths
+
+	qiime feature-table tabulate-seqs  --i-data Wax2020/DADA2/rep-seqs.qza --o-visualization Wax2020/DADA2/rep-seqs.qzv
+
+#### Align representative sequences and construct a phylogenetic tree, but there is no visualization of this.
+
+	qiime phylogeny align-to-tree-mafft-fasttree --i-sequences Wax2020/DADA2/rep-seqs.qza  --o-alignment Wax2020/DADA2/	aligned-rep-seqs.qza  --o-masked-alignment Wax2020/DADA2/masked-aligned-rep-seqs.qza  --o-tree Wax2020/DADA2/	unrooted-tree.qza  --o-rooted-tree Wax2020/DADA2/rooted-tree.qza
+
+#### Taxonomy classifiers for use with q2-feature-classifier : Pre-trained classifiers can be found https://docs.qiime2.org/2021.8/data-resources/
+#### Marco helped me grab one for my project
+
+
+	qiime feature-classifier classify-sklearn --i-classifier silva-138-99-515-806-nb-classifier.qza --i-reads Wax2020/DADA2/rep-seqs.qza --	o-classification Wax2020/DADA2/taxonomy.qza
+
+####Visualization of metadata as a table of the feature and the assigned taxonomy
+
+	qiime metadata tabulate --m-input-file Wax2020/DADA2/taxonomy.qza  --o-visualization Wax2020/DADA2/taxonomy.qzv
+
+####Creates new directory phyloseq
+####Turn these files into files that we can read from QIIME artifacts
+####Creates visualization, still a part of assigning taxonomy and making an OTU/ASV table
+
+	mkdir Wax2020/DADA2/phyloseq
+	qiime tools export   --input-path Wax2020/DADA2/rep-seqs.qza  --output-pathWax2020/DADA2/phyloseq
+	qiime tools export  --input-path Wax2020/DADA2/unrooted-tree.qza  --output-path Wax2020/DADA2/phyloseq
+	cd Wax2020/DADA2/phyloseq
+
+	mv tree.nwk unrooted_tree.nwk
+	cd ../../..
+
+	qiime tools export   --input-path Wax2020/DADA2/rooted-tree.qza   --output-path Wax2020/DADA2/phyloseq
+	qiime tools export  --input-path Wax2020g/DADA2/table.qza   --output-path Wax2020/DADA2/phyloseq
+	qiime tools export --input-path Wax2020/DADA2/taxonomy.qza --output-path Wax2020/DADA2/
